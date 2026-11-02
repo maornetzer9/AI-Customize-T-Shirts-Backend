@@ -1,34 +1,34 @@
 import express from 'express'
-import * as dotenv from 'dotenv'
-// import { Configuration, OpenAIApi } from 'openai';
-import OpenAI from 'openai/index.mjs';
 
+const MAX_PROMPT_LENGTH = 1000
 
-dotenv.config();
+function readPrompt(body) {
+    const prompt = body?.prompt
+    if (typeof prompt !== 'string') return null
 
-const router = express.Router();
-const config = { apiKey: process.env.OPENAI_API_KEY }
-const openai = new OpenAI(config);
+    const trimmed = prompt.trim()
+    if (trimmed.length < 1 || trimmed.length > MAX_PROMPT_LENGTH) return null
 
+    return trimmed
+}
 
-router.route('/').get((req, res) => {
-    res.status(200).json({message: 'Hello From Dalle'})
-})
+export function createDalleRouter() {
+    const router = express.Router()
 
-router.route('/').post(async (req, res) => {
-    try
-    {
-        const { prompt } = req.body;
-        const response = await openai.images.generate({prompt, model: "dall-e-3", n: 1, size: '1024x1024', response_format: 'b64_json'});
-        const { b64_json } = response.data[0]
+    router.route('/').get((req, res) => {
+        res.status(200).json({ message: 'Hello From Dalle' })
+    })
 
-        return res.status(200).json({ image: b64_json })
-    }
-    catch(err)
-    {
-        console.error(err);
-        return res.status(500).json('Internal server error')
-    }
-})
+    router.route('/').post((req, res) => {
+        const prompt = readPrompt(req.body)
+        if (!prompt) {
+            return res.status(400).json({ error: 'invalid_prompt' })
+        }
 
-export default router 
+        return res.status(503).json({ error: 'image_generation_unavailable' })
+    })
+
+    return router
+}
+
+export default createDalleRouter
