@@ -3,12 +3,12 @@ import * as dotenv from 'dotenv'
 import cors from 'cors'
 import path from 'path'
 import { pathToFileURL } from 'url'
-import { createDalleRouter } from './routes/dalle.routes.js'
+import { createImageGenerationRouter } from './routes/imageGeneration.routes.js'
 
 dotenv.config()
 
-const RATE_WINDOW_MS = 60_000
-const RATE_MAX_POSTS = 30
+const RATE_WINDOW_MS = 10 * 60_000
+const RATE_MAX_POSTS = 8
 const DEV_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173']
 
 function allowedOrigins() {
@@ -44,6 +44,8 @@ function createRateLimiter({ windowMs = RATE_WINDOW_MS, max = RATE_MAX_POSTS } =
         const recent = (hits.get(key) || []).filter((timestamp) => now - timestamp < windowMs)
 
         if (recent.length >= max) {
+            const retryAfter = Math.max(1, Math.ceil((windowMs - (now - recent[0])) / 1000))
+            res.set('Retry-After', String(retryAfter))
             res.status(429).json({ error: 'rate_limit_exceeded' })
             return
         }
@@ -75,13 +77,39 @@ function handleClientError(err, req, res, next) {
     res.status(500).json({ error: 'internal_error' })
 }
 
-export function createApp({ rateLimit } = {}) {
+function trustPrivateProxy(address) {
+    const normalized = address.toLowerCase()
+    if (normalized.includes(':')) {
+        return normalized.startsWith('fc') || normalized.startsWith('fd')
+    }
+
+    const parts = normalized.split('.').map(Number)
+    if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+        return false
+    }
+
+    if (parts[0] === 10) return true
+    if (parts[0] === 192 && parts[1] === 168) return true
+    return parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31
+}
+
+function setSecurityHeaders(req, res, next) {
+    res.set('X-Content-Type-Options', 'nosniff')
+    res.set('Referrer-Policy', 'no-referrer')
+    res.set('X-Frame-Options', 'DENY')
+    res.set('Cache-Control', 'no-store')
+    next()
+}
+
+export function createApp({ rateLimit, imageGeneration } = {}) {
     const app = express()
 
+    app.set('trust proxy', trustPrivateProxy)
+    app.use(setSecurityHeaders)
     app.use(cors(createCorsOptions()))
     app.use(express.json({ limit: '100kb' }))
     app.use(createRateLimiter(rateLimit))
-    app.use('/api/v1/dalle', createDalleRouter())
+    app.use('/api/v1/images/generate', createImageGenerationRouter(imageGeneration))
 
     app.get('/', (req, res) => {
         res.status(200).json({ message: 'Server is running' })

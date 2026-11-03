@@ -2,7 +2,7 @@
 
 **A small Express API for the 3D T-Shirt Customizer.**
 
-The API answers a health check and accepts the image-generation route used by the editor. Generation is intentionally unavailable. The customizer does not need this service for color, logo, or full-print editing.
+The API answers a health check and accepts the image-generation route used by the editor. Generation runs only when the Cloudflare variables are set. The customizer does not need this service for color, logo, or full-print editing.
 
 [![API](https://img.shields.io/badge/API-Express%204-000000?style=flat-square)](https://ai-customize-t-shirts-backend.onrender.com/)
 ![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square)
@@ -16,14 +16,13 @@ The API answers a health check and accepts the image-generation route used by th
 | Method | Path | Result |
 | --- | --- | --- |
 | `GET` | `/` | `200` and `{"message":"Server is running"}` |
-| `GET` | `/api/v1/dalle` | `200` and `{"message":"Hello From Dalle"}` |
-| `POST` | `/api/v1/dalle` | Validates `prompt`, then returns `503` and `{"error":"image_generation_unavailable"}` |
+| `POST` | `/api/v1/images/generate` | Validates `prompt` and optional `mode`. Logo mode returns a transparent PNG. Full mode returns the generated JPEG. Missing configuration returns `503`. |
 
-A prompt must be a string of 1 to 1000 characters after trimming. Anything else returns `400` and `{"error":"invalid_prompt"}`. JSON bodies are limited to 100 KB. POST requests are limited to 30 per minute per IP.
+A prompt must be a string of 1 to 1000 characters after trimming. Anything else returns `400` and `{"error":"invalid_prompt"}`. JSON bodies are limited to 100 KB. Generation is limited to 8 requests per 10 minutes per IP and 2 requests at a time. A limited request returns `429`, `{"error":"rate_limit_exceeded"}`, and `Retry-After`.
 
-Browser origins `http://localhost:5173` and `http://127.0.0.1:5173` are allowed. `ORIGIN` adds one more allowed browser origin. Requests with no browser `Origin` header are allowed.
+Browser origins `http://localhost:5173` and `http://127.0.0.1:5173` are allowed. `ORIGIN` adds one more allowed browser origin. Requests with no browser `Origin` header are allowed. The client IP comes from a private-network proxy. A direct caller cannot choose that IP with a forwarding header.
 
-The server does not call an image provider. `ENABLE_IMAGE_GENERATION` does not turn generation on.
+When `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_BACKGROUND_WORKER_URL` are set, a valid prompt is sent to Cloudflare FLUX.1 Schnell. `mode` `logo` sends that JPEG to the background-removal Worker and returns a transparent PNG. `mode` `full` returns the generated JPEG unchanged. A provider failure is retried once, then returned as `502` and `{"error":"image_generation_failed"}`. Timeouts and missing configuration return `503`.
 
 ## Tech Stack
 
@@ -32,8 +31,14 @@ Express 4, CORS, and dotenv. Tests use the Node.js built-in test runner. Nodemon
 ## Project Structure
 
 ```text
+├── cloudflare
+│   └── background-removal.js
+├── config
+│   └── imageGeneration.js
 ├── routes
-│   └── dalle.routes.js
+│   └── imageGeneration.routes.js
+├── services
+│   └── imageGeneration.js
 ├── server.js
 ├── server.test.js
 ├── .env.example
@@ -60,13 +65,17 @@ Copy `.env.example` to `.env` and set the values below. The names are the only c
 | --- | --- |
 | `PORT` | Port the API listens on. Use `8080` locally. The host sets this in production. |
 | `ORIGIN` | One extra browser origin allowed by CORS. Local Vite origins are already allowed. |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account used by Workers AI. |
+| `CLOUDFLARE_API_TOKEN` | Token used only by the API to run Workers AI. |
+| `CLOUDFLARE_BACKGROUND_WORKER_URL` | HTTPS address of the existing background-removal Worker. |
+| `CLOUDFLARE_BACKGROUND_WORKER_TOKEN` | Shared token sent to the Worker as `X-Worker-Token`. Logo removal requires it. |
 
 ```bash
 npm run dev
 npm test
 ```
 
-The frontend development server posts to `http://localhost:8080/api/v1/dalle`. Its production build does not call this API.
+The frontend development server posts to `http://localhost:8080/api/v1/images/generate`. Its production build posts to this API on the same path.
 
 ## Deployment
 
