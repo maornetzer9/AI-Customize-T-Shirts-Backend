@@ -1,99 +1,157 @@
-# 3D T-Shirt Customizer API
+# WEARFORM API
 
-**A small Express API for the 3D T-Shirt Customizer.**
+**The image API for WEARFORM, an AI-powered 3D apparel studio.**
 
-The API answers a health check and accepts the image-generation route used by the editor. Generation runs only when the Cloudflare variables are set. The customizer does not need this service for color, logo, or full-print editing.
+[API](https://ai-customize-t-shirts-backend.onrender.com/) · [Studio](https://wearform-studio.onrender.com/)
 
-[![API](https://img.shields.io/badge/API-Express%204-000000?style=flat-square)](https://ai-customize-t-shirts-backend.onrender.com/)
-![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=flat-square)
+## Product overview
 
-**Health check:** [ai-customize-t-shirts-backend.onrender.com](https://ai-customize-t-shirts-backend.onrender.com/)
+The API serves a health check and one generation route. WEARFORM uses it for AI Logo and AI Full. Color, image upload, and the sample mark on the shirt do not need this service.
 
-**Frontend:** [AI Customize T-Shirts Frontend](https://github.com/maornetzer9/AI-Customize-T-Shirts-Frontend)
+Generation runs only when the Cloudflare settings are present. The browser never receives the Cloudflare token, the worker token, or a provider error body.
 
-## What It Does
+## Architecture
+
+Express 4 checks the prompt and mode, then calls Cloudflare Workers AI. Logo mode sends the JPEG to the background-removal Worker and returns a PNG. Full mode returns the JPEG unchanged. CORS, a per-IP post limit, a concurrency cap, and security headers sit in front of the route.
+
+```text
+browser → POST /api/v1/images/generate
+        → FLUX.1 Schnell on Cloudflare Workers AI
+        → logo: background-removal Worker → image/png
+        → full: image/jpeg
+```
+
+```text
+cloudflare/background-removal.js   Worker source for logo background removal
+config/imageGeneration.js          Model name, timeout, and setting checks
+routes/imageGeneration.routes.js   Validation, concurrency, and responses
+services/imageGeneration.js        Model call, retry, and worker call
+server.js                          CORS, rate limit, headers, and startup
+```
+
+The Worker source is in this repository. The running Worker is a separate Cloudflare deployment and is not started by `npm start`.
+
+## Endpoints
 
 | Method | Path | Result |
 | --- | --- | --- |
 | `GET` | `/` | `200` and `{"message":"Server is running"}` |
-| `POST` | `/api/v1/images/generate` | Validates `prompt` and optional `mode`. Logo mode returns a transparent PNG. Full mode returns the generated JPEG. Missing configuration returns `503`. |
+| `POST` | `/api/v1/images/generate` | A generated image, or one of the errors below |
 
-A prompt must be a string of 1 to 1000 characters after trimming. Anything else returns `400` and `{"error":"invalid_prompt"}`. JSON bodies are limited to 100 KB. Generation is limited to 8 requests per 10 minutes per IP and 2 requests at a time. A limited request returns `429`, `{"error":"rate_limit_exceeded"}`, and `Retry-After`.
+### Generate
 
-Browser origins `http://localhost:5173` and `http://127.0.0.1:5173` are allowed. `ORIGIN` adds one more allowed browser origin. Requests with no browser `Origin` header are allowed. The client IP comes from a private-network proxy. A direct caller cannot choose that IP with a forwarding header.
+```http
+POST /api/v1/images/generate
+Content-Type: application/json
 
-When `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_BACKGROUND_WORKER_URL` are set, a valid prompt is sent to Cloudflare FLUX.1 Schnell. `mode` `logo` sends that JPEG to the background-removal Worker and returns a transparent PNG. `mode` `full` returns the generated JPEG unchanged. A provider failure is retried once, then returned as `502` and `{"error":"image_generation_failed"}`. Timeouts and missing configuration return `503`.
-
-## Tech Stack
-
-Express 4, CORS, and dotenv. Tests use the Node.js built-in test runner. Nodemon restarts the process during local development.
-
-## Project Structure
-
-```text
-├── cloudflare
-│   └── background-removal.js
-├── config
-│   └── imageGeneration.js
-├── routes
-│   └── imageGeneration.routes.js
-├── services
-│   └── imageGeneration.js
-├── server.js
-├── server.test.js
-├── .env.example
-└── package.json
+{ "prompt": "a small red star", "mode": "logo" }
 ```
 
-## Available Scripts
+`mode` may be omitted and then defaults to `logo`. `full` keeps the generated artwork.
 
-| Script | Purpose |
-| --- | --- |
-| `npm start` | Run the API with Node for production |
-| `npm run dev` | Run the API locally with nodemon |
-| `npm test` | Run the API tests |
+```json
+{ "image": "<base64>", "mediaType": "image/png" }
+```
 
-## Local Development
+AI Full uses `"mediaType": "image/jpeg"`.
+
+A logo prompt is sent to the model with one added instruction: a single centered subject on a plain background, when the combined text still fits. That instruction is not returned to the browser.
+
+## Cloudflare Workers AI
+
+The route calls `@cf/black-forest-labs/flux-1-schnell` when `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_BACKGROUND_WORKER_URL` are set. The account id must be 32 hex characters. The worker address must be HTTPS. The API token is sent only to Cloudflare.
+
+A provider failure is retried once, except for `401` and `403`. The browser receives `502` and `image_generation_failed`. A timeout, or a missing configuration, returns `503` and `image_generation_unavailable`. Each outbound call is limited to 12 seconds. A returned image must be a real JPEG or PNG and at most 4 MB.
+
+## Background removal
+
+Logo mode posts the JPEG to `CLOUDFLARE_BACKGROUND_WORKER_URL`. When `CLOUDFLARE_BACKGROUND_WORKER_TOKEN` is set, it is sent only on that request as `X-Worker-Token`. The Worker rejects a request without the expected token, a body that is not a JPEG, and an image over 4 MB.
+
+Full mode does not call the Worker. A Worker rejection, or a response that is not a PNG, becomes `502`.
+
+## Validation, rate limiting, and concurrency
+
+The prompt must be a string of 1 to 1,000 characters after trimming. `mode` must be `logo`, `full`, or omitted. JSON bodies over 100 KB are rejected.
+
+Posts are limited to 8 per 10 minutes per IP. The limiter stores hits in memory. A private-network proxy may set the client IP. A caller cannot choose that IP with a forwarding header.
+
+Two generations may run at the same time. A third receives `429`, `rate_limit_exceeded`, and `Retry-After: 12`.
+
+## Errors
+
+| Status | Body | When |
+| --- | --- | --- |
+| `400` | `{"error":"invalid_prompt"}` | The prompt is missing, blank, or longer than 1,000 characters after trimming |
+| `400` | `{"error":"invalid_mode"}` | `mode` is not `logo` or `full` |
+| `405` | `{"error":"method_not_allowed"}` | The generation path receives a method other than POST |
+| `413` | `{"error":"payload_too_large"}` | JSON is larger than 100 KB |
+| `429` | `{"error":"rate_limit_exceeded"}` | The IP limit or the concurrency cap is full |
+| `502` | `{"error":"image_generation_failed"}` | The model or the Worker fails, or the image is unusable |
+| `503` | `{"error":"image_generation_unavailable"}` | Configuration is missing or the call times out |
+| `500` | `{"error":"internal_error"}` | An unexpected server error |
+
+Responses also send `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, and `Cache-Control: no-store`.
+
+Browser origins `http://localhost:5173` and `http://127.0.0.1:5173` are allowed. The published studio and the previous studio origin are allowed as well. `ORIGIN` may add more origins, separated by commas. Requests with no `Origin` header are allowed. Retired generation URLs are not served.
+
+## Verification
+
+```bash
+npm test
+```
+
+The 20 tests cover the health check, validation, CORS, body size, the IP limit, a spoofed forwarding header, concurrency, security headers, logo PNG output, full-print JPEG output, one provider retry, timeouts, and generic provider errors. The tests do not call Cloudflare.
+
+## Local development
+
+Requirements: Node.js 18 or newer, and npm.
 
 ```bash
 npm install
 ```
 
-Copy `.env.example` to `.env` and set the values below. The names are the only configuration this process reads.
+Copy `.env.example` to `.env`. The process reads these names:
 
 | Name | Purpose |
 | --- | --- |
 | `PORT` | Port the API listens on. Use `8080` locally. The host sets this in production. |
-| `ORIGIN` | One extra browser origin allowed by CORS. Local Vite origins are already allowed. |
+| `ORIGIN` | Extra browser origins allowed by CORS, separated by commas. Local Vite origins and the published studio origins are already allowed. |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account used by Workers AI. |
 | `CLOUDFLARE_API_TOKEN` | Token used only by the API to run Workers AI. |
-| `CLOUDFLARE_BACKGROUND_WORKER_URL` | HTTPS address of the existing background-removal Worker. |
-| `CLOUDFLARE_BACKGROUND_WORKER_TOKEN` | Shared token sent to the Worker as `X-Worker-Token`. Logo removal requires it. |
+| `CLOUDFLARE_BACKGROUND_WORKER_URL` | HTTPS address of the background-removal Worker. |
+| `CLOUDFLARE_BACKGROUND_WORKER_TOKEN` | Shared token sent to the Worker as `X-Worker-Token`. |
+
+Do not commit `.env`. The example file contains placeholders only.
 
 ```bash
 npm run dev
 npm test
 ```
 
-The frontend development server posts to `http://localhost:8080/api/v1/images/generate`. Its production build posts to this API on the same path.
+| Script | Purpose |
+| --- | --- |
+| `npm start` | Run the API with Node |
+| `npm run dev` | Run the API locally with nodemon |
+| `npm test` | Run the API tests |
+
+The studio’s development server posts to `http://localhost:8080/api/v1/images/generate`. Its production build posts to this API on the same path.
 
 ## Deployment
-
-This repository is the API:
-
-[github.com/maornetzer9/AI-Customize-T-Shirts-Backend](https://github.com/maornetzer9/AI-Customize-T-Shirts-Backend)
-
-The published service is [ai-customize-t-shirts-backend.onrender.com](https://ai-customize-t-shirts-backend.onrender.com/). The frontend is a separate repository and stays available when this API does not.
 
 | Setting | Value |
 | --- | --- |
 | Install | `npm install` |
 | Start | `npm start` |
 
-`npm start` runs `node server.js`. Local development uses `npm run dev`.
+`npm start` runs `node server.js`. The live API is [ai-customize-t-shirts-backend.onrender.com](https://ai-customize-t-shirts-backend.onrender.com/). The Render service is named `wearform-api` and stayed on the free plan. Renaming the service kept this public address, so `wearform-api.onrender.com` is not the API. A push to `main` deploys automatically. The host supplies `PORT` and the Cloudflare settings. The studio stays available when this API does not.
 
-A push to `main` deploys automatically. The host runs `npm install` and starts the process with `node server.js`.
+## Related repositories
+
+| | Repository |
+| --- | --- |
+| This API | [wearform-backend](https://github.com/maornetzer9/wearform-backend) |
+| WEARFORM studio | [wearform-frontend](https://github.com/maornetzer9/wearform-frontend) |
 
 ## License
 
-The package metadata identifies this project as ISC.
+ISC. See `package.json`.

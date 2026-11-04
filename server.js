@@ -10,9 +10,20 @@ dotenv.config()
 const RATE_WINDOW_MS = 10 * 60_000
 const RATE_MAX_POSTS = 8
 const DEV_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173']
+const STUDIO_ORIGINS = [
+    'https://ai-customize-t-shirts-frontend.onrender.com',
+    'https://wearform-studio.onrender.com',
+]
+
+function configuredOrigins() {
+    return String(process.env.ORIGIN || '')
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean)
+}
 
 function allowedOrigins() {
-    return [...new Set([process.env.ORIGIN, ...DEV_ORIGINS].filter(Boolean))]
+    return [...new Set([...configuredOrigins(), ...STUDIO_ORIGINS, ...DEV_ORIGINS])]
 }
 
 function createCorsOptions() {

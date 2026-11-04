@@ -107,6 +107,14 @@ test('CORS allows the dev client and rejects other origins', async () => {
         assert.equal(allowed.headers.get('access-control-allow-origin'), VITE_ORIGIN)
         assert.notEqual(allowed.headers.get('access-control-allow-origin'), '*')
 
+        for (const origin of [
+            'https://wearform-studio.onrender.com',
+            'https://ai-customize-t-shirts-frontend.onrender.com',
+        ]) {
+            const studio = await postJson(base, { prompt: 'a small logo' }, { origin })
+            assert.equal(studio.headers.get('access-control-allow-origin'), origin)
+        }
+
         const blocked = await postJson(base, { prompt: 'a small logo' }, { origin: EVIL_ORIGIN })
         assert.equal(blocked.headers.get('access-control-allow-origin'), null)
 
